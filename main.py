@@ -121,54 +121,31 @@ def webhook_verify(
 # =========================
 @app.post("/webhooks/meta")
 async def webhook_receive(request: Request):
-    payload = await request.json()
-        print("WEBHOOK OBJECT:", payload.get("object"))
-    if payload.get("entry"):
-        print("FIRST ENTRY ID (PAGE_ID):", payload["entry"][0].get("id"))
+    try:
+        payload = await request.json()
+    except Exception as e:
+        print("[ERROR] invalid json:", e)
+        return {"ok": True}
 
-    # print("WEBHOOK POST PAYLOAD:", payload)  # décommente si tu veux tout voir
+    # debug: affiche juste les clés principales
+    print("WEBHOOK keys:", list(payload.keys()))
+    print("WEBHOOK object:", payload.get("object"))
 
-    # Meta envoie object="page"
-    entries = payload.get("entry", [])
+    entries = payload.get("entry") or []
+    print("ENTRY count:", len(entries))
 
     for entry in entries:
-        page_id = entry.get("id")  # <-- ID de la Page Facebook
-        print("PAGE_ID:", page_id)
-        print("RESOLVED shop_id:", shop_id)
+        page_id = entry.get("id")
+        print("PAGE_ID (entry.id):", page_id)
 
-        if not page_id:
-            continue
+        messaging_events = entry.get("messaging") or []
+        print("MESSAGING count:", len(messaging_events))
 
-        # Résoudre shop_id via channels
-        shop_id = resolve_shop_id(page_id)
-
-        messaging_events = entry.get("messaging", [])
         for event in messaging_events:
-            sender_id = (event.get("sender") or {}).get("id")  # PSID client
-            if not sender_id:
-                continue
+            sender_id = (event.get("sender") or {}).get("id")
+            text = ((event.get("message") or {}).get("text")) or ""
+            postback_payload = ((event.get("postback") or {}).get("payload"))
 
-            # message texte
-            msg = event.get("message") or {}
-            text = msg.get("text") or ""
-
-            # postback (boutons)
-            postback = event.get("postback") or {}
-            payload_postback = postback.get("payload")
-
-            if not shop_id:
-                # Boutique pas configurée (channels manquant)
-                # (tu peux aussi juste ignorer)
-                reply = "⚠️ Cette page n’est pas encore reliée à une boutique (channels)."
-                send_message(sender_id, reply)
-                continue
-
-            # Exemple réponse tenant-aware
-            if payload_postback:
-                reply = f"✅ shop_id={shop_id}\nPostback: {payload_postback}"
-            else:
-                reply = f"✅ shop_id={shop_id}\nTu as dit: {text}"
-
-            send_message(sender_id, reply)
+            print("EVENT sender_id:", sender_id, "text:", text, "postback:", postback_payload)
 
     return {"ok": True}
