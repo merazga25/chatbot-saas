@@ -215,6 +215,10 @@ async def webhook_receive(request: Request):
 
             # ✅ Toujours enregistrer/mettre à jour le client (même salam)
             upsert_customer(shop_id, "messenger", sender_id)
+            if is_greeting(text):
+                send_message(sender_id, greeting_reply())
+                continue
+
 
             # 🔎 Chercher produit
             product = find_product_by_text(shop_id, text)
