@@ -2,6 +2,9 @@ from fastapi import FastAPI
 import os
 
 app = FastAPI()
+@app.get("/debug/ping")
+def debug_ping():
+    return {"ping": "pong"}
 
 @app.get("/")
 def root():
