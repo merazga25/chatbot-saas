@@ -122,6 +122,10 @@ def webhook_verify(
 @app.post("/webhooks/meta")
 async def webhook_receive(request: Request):
     payload = await request.json()
+        print("WEBHOOK OBJECT:", payload.get("object"))
+    if payload.get("entry"):
+        print("FIRST ENTRY ID (PAGE_ID):", payload["entry"][0].get("id"))
+
     # print("WEBHOOK POST PAYLOAD:", payload)  # décommente si tu veux tout voir
 
     # Meta envoie object="page"
@@ -129,6 +133,9 @@ async def webhook_receive(request: Request):
 
     for entry in entries:
         page_id = entry.get("id")  # <-- ID de la Page Facebook
+        print("PAGE_ID:", page_id)
+        print("RESOLVED shop_id:", shop_id)
+
         if not page_id:
             continue
 
