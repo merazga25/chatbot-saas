@@ -5,6 +5,14 @@ import json
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
+from supabase import create_client
+import os
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 
@@ -62,3 +70,11 @@ async def webhook_post(request: Request):
                 send_message(sender_id, reply)
 
     return PlainTextResponse("OK", status_code=200)
+    @app.get("/debug/supabase")
+def debug_supabase():
+    res = supabase.table("shops").select("id, name").limit(1).execute()
+    return {
+        "ok": True,
+        "data": res.data
+    }
+
