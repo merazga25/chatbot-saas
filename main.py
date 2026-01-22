@@ -68,6 +68,28 @@ def resolve_shop_id(page_id: str) -> str | None:
         return None
     return data[0]["shop_id"]
 
+def find_product_by_text(shop_id: str, text: str):
+    """
+    Cherche un produit de la boutique dont un keyword apparaît dans le texte.
+    Simple v1 (on améliorera après).
+    """
+    q = (text or "").lower()
+
+    res = (
+        supabase.table("products")
+        .select("id,name,price,stock,keywords")
+        .eq("shop_id", shop_id)
+        .eq("is_active", True)
+        .execute()
+    )
+    products = res.data or []
+
+    for p in products:
+        kws = p.get("keywords") or []
+        for kw in kws:
+            if kw and kw.lower() in q:
+                return p
+    return None
 
 # =========================
 # BASIC ROUTES
@@ -143,7 +165,14 @@ async def webhook_receive(request: Request):
                 send_message(sender_id, "⚠️ Page non reliée à une boutique (channels).")
                 continue
 
-            send_message(sender_id, f"✅ shop_id={shop_id}\nTu as dit: {text}")
+            product = find_product_by_text(shop_id, text)
+
+            if product:
+                name = product["name"]
+                price = product["price"]
+                stock = product["stock"]
+                send_message(sender_id, f"📦 {name}\n💰 Prix: {price} DZD\n✅ Stock: {stock}")
+            else:
+                send_message(sender_id, f"✅ shop_id={shop_id}\nTu as dit: {text}")
 
     return {"ok": True}
-
