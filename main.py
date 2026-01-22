@@ -195,15 +195,21 @@ async def webhook_receive(request: Request):
             if not sender_id:
                 continue
 
-            text = ((event.get("message") or {}).get("text")) or ""
+            # Message texte (ignorer read/delivery/etc.)
+            msg = event.get("message") or {}
+            text = msg.get("text") or ""
+            if not text:
+                continue
 
+            # Si pas de boutique liée
             if not shop_id:
                 send_message(sender_id, "⚠️ Page non reliée à une boutique (channels).")
                 continue
 
-            # ✅ ICI on enregistre / met à jour le client
+            # ✅ Toujours enregistrer/mettre à jour le client (même salam)
             upsert_customer(shop_id, "messenger", sender_id)
 
+            # 🔎 Chercher produit
             product = find_product_by_text(shop_id, text)
 
             if product:
