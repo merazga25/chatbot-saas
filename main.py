@@ -121,31 +121,29 @@ def webhook_verify(
 # =========================
 @app.post("/webhooks/meta")
 async def webhook_receive(request: Request):
-    try:
-        payload = await request.json()
-    except Exception as e:
-        print("[ERROR] invalid json:", e)
-        return {"ok": True}
-
-    # debug: affiche juste les clés principales
-    print("WEBHOOK keys:", list(payload.keys()))
-    print("WEBHOOK object:", payload.get("object"))
+    payload = await request.json()
 
     entries = payload.get("entry") or []
-    print("ENTRY count:", len(entries))
-
     for entry in entries:
         page_id = entry.get("id")
-        print("PAGE_ID (entry.id):", page_id)
+        if not page_id:
+            continue
 
-        messaging_events = entry.get("messaging") or []
-        print("MESSAGING count:", len(messaging_events))
+        shop_id = resolve_shop_id(page_id)
+        print("PAGE_ID:", page_id, "shop_id:", shop_id)
 
-        for event in messaging_events:
+        for event in (entry.get("messaging") or []):
             sender_id = (event.get("sender") or {}).get("id")
-            text = ((event.get("message") or {}).get("text")) or ""
-            postback_payload = ((event.get("postback") or {}).get("payload"))
+            if not sender_id:
+                continue
 
-            print("EVENT sender_id:", sender_id, "text:", text, "postback:", postback_payload)
+            text = ((event.get("message") or {}).get("text")) or ""
+
+            if not shop_id:
+                send_message(sender_id, "⚠️ Page non reliée à une boutique (channels).")
+                continue
+
+            send_message(sender_id, f"✅ shop_id={shop_id}\nTu as dit: {text}")
 
     return {"ok": True}
+
