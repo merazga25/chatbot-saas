@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import PlainTextResponse
 import os
 import requests
-
+from datetime import datetime, timezone
 from supabase import create_client
 
 app = FastAPI()
@@ -90,6 +90,42 @@ def find_product_by_text(shop_id: str, text: str):
             if kw and kw.lower() in q:
                 return p
     return None
+def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
+    """
+    Crée le client s’il n’existe pas (shop_id + platform + psid),
+    sinon met à jour last_seen_at.
+    """
+
+    # 1) Chercher si le client existe déjà
+    res = (
+        supabase.table("customers")
+        .select("id")
+        .eq("shop_id", shop_id)
+        .eq("platform", platform)
+        .eq("external_id", psid)
+        .limit(1)
+        .execute()
+    )
+
+    existing = res.data or []
+
+    # 2) S'il existe → update last_seen_at
+    if existing:
+        supabase.table("customers").update({
+            "last_seen_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", existing[0]["id"]).execute()
+        return
+
+    # 3) Sinon → insert nouveau client
+    supabase.table("customers").insert({
+        "shop_id": shop_id,
+        "platform": platform,
+        "external_id": psid,
+        "first_seen_at": datetime.now(timezone.utc).isoformat(),
+        "last_seen_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+
 
 # =========================
 # BASIC ROUTES
@@ -164,6 +200,9 @@ async def webhook_receive(request: Request):
             if not shop_id:
                 send_message(sender_id, "⚠️ Page non reliée à une boutique (channels).")
                 continue
+
+            # ✅ ICI on enregistre / met à jour le client
+            upsert_customer(shop_id, "messenger", sender_id)
 
             product = find_product_by_text(shop_id, text)
 
