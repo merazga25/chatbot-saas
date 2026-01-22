@@ -48,6 +48,13 @@ def send_message(psid: str, text: str) -> dict:
     except Exception:
         return {"ok": False, "status_code": r.status_code, "raw": r.text}
 
+def is_greeting(text: str) -> bool:
+    t = (text or "").strip().lower()
+    greetings = ["salam", "slm", "salut", "bonjour", "bonsoir", "cc", "coucou", "saha"]
+    return t in greetings or any(t.startswith(g + " ") for g in greetings)
+
+def greeting_reply() -> str:
+    return "Salam 👋 Marhba bik! قولي اسم المنتج ولا واش حبيت تشري 😊"
 
 def resolve_shop_id(page_id: str) -> str | None:
     """
