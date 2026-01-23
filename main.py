@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import PlainTextResponse
 import os
 import requests
+import re
 from datetime import datetime, timezone
 from supabase import create_client
 
@@ -14,35 +15,56 @@ app = FastAPI()
 # 2) VARIABLES D’ENV (Railway / GitHub Secrets)
 # ============================================================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mon_token_secret_123")
-PAGE_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
+
+# Fallback global (si channels.access_token est vide)
+DEFAULT_PAGE_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-# Client Supabase
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================================================
-# 3) HELPERS (fonctions)
+# 3) HELPERS
 # ============================================================
 
 def now_utc_iso() -> str:
-    """Date/heure UTC au format ISO."""
     return datetime.now(timezone.utc).isoformat()
 
 
-def send_message(psid: str, text: str) -> dict:
+def get_channel_by_page_id(page_id: str) -> dict | None:
     """
-    Envoie un message à un utilisateur Messenger via Graph API.
-    psid = sender_id
+    Retourne le channel (shop_id, id=channel_id, access_token) via external_id = PAGE_ID.
     """
-    if not PAGE_TOKEN:
-        print("[ERROR] PAGE_ACCESS_TOKEN missing in env")
+    if not page_id:
+        return None
+
+    res = (
+        supabase.table("channels")
+        .select("id,shop_id,access_token,is_active")
+        .eq("platform", "messenger")
+        .eq("external_id", page_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    data = res.data or []
+    return data[0] if data else None
+
+
+def send_message(psid: str, text: str, page_token: str | None = None) -> dict:
+    """
+    Envoie un message Messenger via Graph API.
+    - page_token: si None -> DEFAULT_PAGE_TOKEN
+    """
+    token = page_token or DEFAULT_PAGE_TOKEN
+    if not token:
+        print("[ERROR] PAGE_ACCESS_TOKEN missing (env + channels)")
         return {"ok": False, "error": "PAGE_ACCESS_TOKEN missing"}
 
     url = "https://graph.facebook.com/v19.0/me/messages"
     payload = {"recipient": {"id": psid}, "message": {"text": text}}
-    params = {"access_token": PAGE_TOKEN}
+    params = {"access_token": token}
 
     r = requests.post(url, params=params, json=payload, timeout=15)
     print("SEND:", r.status_code, r.text)
@@ -53,73 +75,44 @@ def send_message(psid: str, text: str) -> dict:
 
 
 def is_greeting(text: str) -> bool:
-    """Détecte si le message est une salutation."""
     t = (text or "").strip().lower()
     greetings = ["salam", "slm", "salut", "bonjour", "bonsoir", "cc", "coucou", "saha"]
     return t in greetings or any(t.startswith(g + " ") for g in greetings)
 
 
 def greeting_reply() -> str:
-    """Réponse quand le client dit salam/bonjour."""
     return "Salam 👋 Marhba bik! قولي اسم المنتج ولا واش حبيت تشري 😊"
 
 
 def wants_to_buy(text: str) -> bool:
-    """
-    Détecte l’intention d’achat (règles simples).
-    On couvre plusieurs écritures: nhab/n7ab, ncommander, etc.
-    """
     t = (text or "").lower().strip()
-
     buy_words = [
         # FR
         "acheter", "achète", "achat",
         "commande", "commander",
         "je veux", "je veux acheter", "je veux commander",
-
-        # Darija (variantes)
+        # Darija
         "n7ab", "n7eb", "nheb",
         "nhab", "nheb nchri", "nhab nchri",
         "chri", "nchri", "nchra",
-
-        # “commander” écrit différemment
+        # commander variantes
         "ncommander", "ncommande", "ncommand", "ncommandi",
     ]
-
     return any(w in t for w in buy_words)
 
 
-def resolve_shop_id(page_id: str) -> str | None:
+def parse_quantity(text: str) -> int | None:
     """
-    Multi-tenant:
-    on récupère shop_id via channels en utilisant la Page ID (entry.id).
-    channels(platform='messenger', external_id=page_id, is_active=true)
+    Quantité = message composé uniquement de chiffres, ex: "5", "05".
     """
-    if not page_id:
-        return None
-
-    res = (
-        supabase.table("channels")
-        .select("shop_id")
-        .eq("platform", "messenger")
-        .eq("external_id", page_id)
-        .eq("is_active", True)
-        .limit(1)
-        .execute()
-    )
-
-    data = res.data or []
-    if not data:
-        return None
-
-    return data[0]["shop_id"]
+    t = (text or "").strip()
+    if re.fullmatch(r"\d+", t):
+        q = int(t)
+        return q if q > 0 else None
+    return None
 
 
 def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
-    """
-    Enregistre le client (customers) si n’existe pas,
-    sinon update last_seen_at.
-    """
     res = (
         supabase.table("customers")
         .select("id")
@@ -148,14 +141,14 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
 
 def find_product_by_text(shop_id: str, text: str) -> dict | None:
     """
-    Cherche un produit de la boutique dont un keyword apparaît dans le texte.
-    products.keywords = jsonb array
+    products.keywords = jsonb array.
+    Match simple: si un keyword apparaît dans le texte.
     """
     q = (text or "").lower()
 
     res = (
         supabase.table("products")
-        .select("id,name,price,stock,keywords")
+        .select("id,name,price,stock,keywords,is_active")
         .eq("shop_id", shop_id)
         .eq("is_active", True)
         .execute()
@@ -170,19 +163,17 @@ def find_product_by_text(shop_id: str, text: str) -> dict | None:
     return None
 
 
-def get_or_create_draft_order(shop_id: str, psid: str) -> str:
+def get_or_create_draft_order(shop_id: str, channel_id: str, psid: str) -> str:
     """
-    IMPORTANT: ta table orders n’a PAS la colonne platform.
-    Donc on ne la filtre PAS.
-    On crée/récupère une commande draft pour (shop_id + customer_psid).
+    Crée/récupère une commande draft pour (shop_id + customer_psid).
     """
-    # 1) Chercher draft existante
     res = (
         supabase.table("orders")
         .select("id")
         .eq("shop_id", shop_id)
         .eq("customer_psid", psid)
         .eq("status", "draft")
+        .order("created_at", desc=True)
         .limit(1)
         .execute()
     )
@@ -190,22 +181,111 @@ def get_or_create_draft_order(shop_id: str, psid: str) -> str:
     if data:
         return data[0]["id"]
 
-    # 2) Sinon créer
     created = (
         supabase.table("orders")
         .insert({
             "shop_id": shop_id,
+            "channel_id": channel_id,
             "customer_psid": psid,
             "status": "draft",
         })
         .execute()
     )
-
     return created.data[0]["id"]
 
 
+def get_active_order(shop_id: str, psid: str) -> dict | None:
+    """
+    Récupère la commande active la plus récente.
+    """
+    res = (
+        supabase.table("orders")
+        .select("id,status,pending_product_id,pending_product_name,created_at")
+        .eq("shop_id", shop_id)
+        .eq("customer_psid", psid)
+        .in_("status", ["awaiting_quantity", "awaiting_confirmation", "draft"])
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    data = res.data or []
+    return data[0] if data else None
+
+
+def set_order_awaiting_quantity(order_id: str, product: dict) -> None:
+    supabase.table("orders").update({
+        "status": "awaiting_quantity",
+        "pending_product_id": product["id"],
+        "pending_product_name": product["name"],
+    }).eq("id", order_id).execute()
+
+
+def load_product(shop_id: str, product_id: str) -> dict | None:
+    res = (
+        supabase.table("products")
+        .select("id,name,price,stock,is_active")
+        .eq("shop_id", shop_id)
+        .eq("id", product_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    data = res.data or []
+    return data[0] if data else None
+
+def create_order_item_and_decrease_stock(
+    shop_id: str,
+    order_id: str,
+    product: dict,
+    quantity: int
+) -> tuple[bool, str]:
+
+    name = product["name"]
+    price = int(product["price"])
+    stock = int(product["stock"])
+
+    if quantity > stock:
+        return False, f"⚠️ Stock insuffisant pour {name}. Disponible: {stock}."
+
+    # 1️⃣ Insert order_item (AVEC quantity)
+    supabase.table("order_items").insert({
+        "order_id": order_id,
+        "product_id": product["id"],
+        "product_name": name,
+        "unit_price": price,
+        "quantity": quantity,
+    }).execute()
+
+    # 2️⃣ Mise à jour stock
+    new_stock = stock - quantity
+    supabase.table("products").update({
+        "stock": new_stock
+    }).eq("id", product["id"]).eq("shop_id", shop_id).execute()
+
+    total = quantity * price
+
+    return True, (
+        f"✅ {quantity} x {name}\n"
+        f"💰 Prix unitaire: {price} DZD\n"
+        f"💵 Total: {total} DZD\n"
+        f"📦 Stock restant: {new_stock}\n\n"
+        f"Confirmer la commande ? (oui / non)"
+    )
+
+
+
+def is_yes(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in ["oui", "ok", "okay", "d'accord", "daccord", "oui.", "ok.", "confirm", "confirmer"]
+
+
+def is_no(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in ["non", "annuler", "annule", "cancel", "stop", "no"]
+
+
 # ============================================================
-# 4) ROUTES BASIC / DEBUG
+# 4) ROUTES DEBUG
 # ============================================================
 
 @app.get("/")
@@ -215,7 +295,6 @@ def root():
 
 @app.get("/debug/env")
 def debug_env():
-    """Vérifie si les variables sont présentes."""
     return {
         "VERIFY_TOKEN": bool(os.getenv("VERIFY_TOKEN")),
         "PAGE_ACCESS_TOKEN": bool(os.getenv("PAGE_ACCESS_TOKEN")),
@@ -226,7 +305,6 @@ def debug_env():
 
 @app.get("/debug/supabase")
 def debug_supabase():
-    """Teste Supabase avec un select simple."""
     res = supabase.table("shops").select("id,name").limit(1).execute()
     return {"ok": True, "data": res.data}
 
@@ -252,10 +330,6 @@ def webhook_verify(
 
 @app.post("/webhooks/meta")
 async def webhook_receive(request: Request):
-    """
-    Reçoit les messages Messenger.
-    IMPORTANT: on met try/except pour éviter "silence" en cas d’erreur DB.
-    """
     try:
         payload = await request.json()
     except Exception as e:
@@ -265,8 +339,18 @@ async def webhook_receive(request: Request):
     entries = payload.get("entry") or []
     for entry in entries:
         page_id = entry.get("id")
-        shop_id = resolve_shop_id(page_id)
-        print("PAGE_ID:", page_id, "shop_id:", shop_id)
+
+        channel = None
+        try:
+            channel = get_channel_by_page_id(page_id)
+        except Exception as e:
+            print("[CHANNEL ERROR]", repr(e))
+
+        if not channel:
+            # Impossible de répondre correctement sans shop/page token
+            print("PAGE_ID:", page_id, "=> channel not found")
+        else:
+            print("PAGE_ID:", page_id, "shop_id:", channel["shop_id"], "channel_id:", channel["id"])
 
         for event in (entry.get("messaging") or []):
             sender_id = (event.get("sender") or {}).get("id")
@@ -280,10 +364,14 @@ async def webhook_receive(request: Request):
 
             print("INCOMING:", {"sender_id": sender_id, "text": text})
 
-            # Si pas de boutique liée
-            if not shop_id:
-                send_message(sender_id, "⚠️ Page non reliée à une boutique (channels).")
+            # Pas de boutique liée
+            if not channel:
+                send_message(sender_id, "⚠️ Page non reliée à une boutique (channels).", DEFAULT_PAGE_TOKEN)
                 continue
+
+            shop_id = channel["shop_id"]
+            channel_id = channel["id"]
+            page_token = channel.get("access_token") or DEFAULT_PAGE_TOKEN
 
             # Toujours enregistrer le client
             try:
@@ -291,45 +379,17 @@ async def webhook_receive(request: Request):
             except Exception as e:
                 print("[CUSTOMER ERROR]", repr(e))
 
-            # Salutation
-            if is_greeting(text):
-                send_message(sender_id, greeting_reply())
-                continue
-
-            # Chercher produit
-            product = None
+            # =========================
+            # STATE ROUTER (priorité)
+            # =========================
             try:
-                product = find_product_by_text(shop_id, text)
+                active_order = get_active_order(shop_id, sender_id)
             except Exception as e:
-                print("[PRODUCT SEARCH ERROR]", repr(e))
-                send_message(sender_id, "⚠️ Erreur recherche produit. Réessaie.")
-                continue
+                print("[ACTIVE ORDER ERROR]", repr(e))
+                active_order = None
 
-            # Si client veut commander mais pas de produit dans le message
-            if not product and wants_to_buy(text):
-                send_message(sender_id, "🛒 D'accord ! Quel produit veux-tu commander ? (ex: airpods)")
-                continue
-
-            # Produit trouvé
-            if product:
-                # Si intention achat -> créer commande draft
-                if wants_to_buy(text):
-                    try:
-                        order_id = get_or_create_draft_order(shop_id, sender_id)
-                        send_message(sender_id, f"🧾 Commande créée (brouillon)\nID: {order_id}\n➡️ Quelle quantité ?")
-                    except Exception as e:
-                        print("[ORDER ERROR]", repr(e))
-                        send_message(sender_id, "⚠️ Erreur création commande. Réessaie.")
-                    continue
-
-                # Sinon -> info produit
-                name = product["name"]
-                price = product["price"]
-                stock = product["stock"]
-                send_message(sender_id, f"📦 {name}\n💰 Prix: {price} DZD\n✅ Stock: {stock}")
-                continue
-
-            # Produit introuvable
-            send_message(sender_id, "Je n’ai pas trouvé ce produit 😅\nEssaie un nom plus clair.")
-
-    return {"ok": True}
+            # 1) Awaiting quantity
+            if active_order and active_order.get("status") == "awaiting_quantity":
+                qty = parse_quantity(text)
+                if qty is None:
+                    send_messag_
