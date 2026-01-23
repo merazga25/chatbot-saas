@@ -177,7 +177,7 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
     buy_words = [
         "acheter", "achète", "achat",
         "commande", "commander",
-        "n7ab ncommader", "je veux commander", "n7eb ", "commande"
+        "n7ab ncommader", "je veux commander", "n7eb ", "commande",
         "chri", "nchri", "nchra",
         "prends", "prendre"
     ]
