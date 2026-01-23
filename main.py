@@ -11,34 +11,30 @@ from supabase import create_client
 app = FastAPI()
 
 # ============================================================
-# 2) VARIABLES D’ENVIRONNEMENT (Railway Variables)
+# 2) VARIABLES D’ENV (Railway / GitHub Secrets)
 # ============================================================
-# Vérification webhook Meta (GET /webhooks/meta)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mon_token_secret_123")
-
-# Token de ta Page Facebook (pour envoyer des messages via Graph API)
 PAGE_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 
-# Supabase (URL + clé serveur)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-# Création du client Supabase (sert à lire/écrire dans la DB)
+# Client Supabase
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================================================
-# 3) FONCTIONS UTILITAIRES (HELPERS)
+# 3) HELPERS (fonctions)
 # ============================================================
 
 def now_utc_iso() -> str:
-    """Retourne la date/heure actuelle en UTC au format ISO (texte)."""
+    """Date/heure UTC au format ISO."""
     return datetime.now(timezone.utc).isoformat()
 
 
 def send_message(psid: str, text: str) -> dict:
     """
     Envoie un message à un utilisateur Messenger via Graph API.
-    - psid = sender_id (id du client Messenger)
+    psid = sender_id
     """
     if not PAGE_TOKEN:
         print("[ERROR] PAGE_ACCESS_TOKEN missing in env")
@@ -50,7 +46,6 @@ def send_message(psid: str, text: str) -> dict:
 
     r = requests.post(url, params=params, json=payload, timeout=15)
     print("SEND:", r.status_code, r.text)
-
     try:
         return r.json()
     except Exception:
@@ -58,23 +53,21 @@ def send_message(psid: str, text: str) -> dict:
 
 
 def is_greeting(text: str) -> bool:
-    """
-    Détecte si le message est une salutation.
-    """
+    """Détecte si le message est une salutation."""
     t = (text or "").strip().lower()
     greetings = ["salam", "slm", "salut", "bonjour", "bonsoir", "cc", "coucou", "saha"]
     return t in greetings or any(t.startswith(g + " ") for g in greetings)
 
 
 def greeting_reply() -> str:
-    """Message de réponse pour une salutation."""
+    """Réponse quand le client dit salam/bonjour."""
     return "Salam 👋 Marhba bik! قولي اسم المنتج ولا واش حبيت تشري 😊"
 
 
 def wants_to_buy(text: str) -> bool:
     """
-    Détecte l’intention d’achat.
-    On commence avec des mots-clés (simple).
+    Détecte l’intention d’achat (règles simples).
+    On couvre plusieurs écritures: nhab/n7ab, ncommander, etc.
     """
     t = (text or "").lower().strip()
 
@@ -84,13 +77,13 @@ def wants_to_buy(text: str) -> bool:
         "commande", "commander",
         "je veux", "je veux acheter", "je veux commander",
 
-        # Darija (différentes écritures)
+        # Darija (variantes)
         "n7ab", "n7eb", "nheb",
         "nhab", "nheb nchri", "nhab nchri",
         "chri", "nchri", "nchra",
 
         # “commander” écrit différemment
-        "ncommander", "ncommandi", "ncommand", "ncommande",
+        "ncommander", "ncommande", "ncommand", "ncommandi",
     ]
 
     return any(w in t for w in buy_words)
@@ -98,12 +91,9 @@ def wants_to_buy(text: str) -> bool:
 
 def resolve_shop_id(page_id: str) -> str | None:
     """
-    Multi-tenant :
-    On récupère shop_id à partir de la Page Facebook (entry.id).
-    Table: channels
-      - platform='messenger'
-      - external_id = page_id
-      - is_active = true
+    Multi-tenant:
+    on récupère shop_id via channels en utilisant la Page ID (entry.id).
+    channels(platform='messenger', external_id=page_id, is_active=true)
     """
     if not page_id:
         return None
@@ -127,10 +117,8 @@ def resolve_shop_id(page_id: str) -> str | None:
 
 def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
     """
-    Enregistre le client s’il n’existe pas encore,
-    sinon met à jour last_seen_at.
-    Table: customers
-      - shop_id, platform, external_id
+    Enregistre le client (customers) si n’existe pas,
+    sinon update last_seen_at.
     """
     res = (
         supabase.table("customers")
@@ -141,17 +129,14 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
         .limit(1)
         .execute()
     )
-
     existing = res.data or []
 
-    # Si le client existe -> update last_seen_at
     if existing:
         supabase.table("customers").update({
             "last_seen_at": now_utc_iso()
         }).eq("id", existing[0]["id"]).execute()
         return
 
-    # Sinon -> créer nouveau client
     supabase.table("customers").insert({
         "shop_id": shop_id,
         "platform": platform,
@@ -164,7 +149,7 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
 def find_product_by_text(shop_id: str, text: str) -> dict | None:
     """
     Cherche un produit de la boutique dont un keyword apparaît dans le texte.
-    Table: products (keywords = jsonb array)
+    products.keywords = jsonb array
     """
     q = (text or "").lower()
 
@@ -182,19 +167,16 @@ def find_product_by_text(shop_id: str, text: str) -> dict | None:
         for kw in kws:
             if kw and str(kw).lower() in q:
                 return p
-
     return None
 
 
 def get_or_create_draft_order(shop_id: str, psid: str) -> str:
     """
-    Crée (ou récupère) une commande 'draft' pour ce client et cette boutique.
-    Table: orders
-      - shop_id
-      - customer_psid
-      - status = 'draft'
-    IMPORTANT: on n'utilise PAS la colonne platform ici (car chez toi elle n'existe pas).
+    IMPORTANT: ta table orders n’a PAS la colonne platform.
+    Donc on ne la filtre PAS.
+    On crée/récupère une commande draft pour (shop_id + customer_psid).
     """
+    # 1) Chercher draft existante
     res = (
         supabase.table("orders")
         .select("id")
@@ -204,19 +186,17 @@ def get_or_create_draft_order(shop_id: str, psid: str) -> str:
         .limit(1)
         .execute()
     )
-
     data = res.data or []
     if data:
         return data[0]["id"]
 
+    # 2) Sinon créer
     created = (
         supabase.table("orders")
         .insert({
             "shop_id": shop_id,
             "customer_psid": psid,
             "status": "draft",
-            "created_at": now_utc_iso(),
-            "updated_at": now_utc_iso(),
         })
         .execute()
     )
@@ -225,7 +205,7 @@ def get_or_create_draft_order(shop_id: str, psid: str) -> str:
 
 
 # ============================================================
-# 4) ROUTES DE TEST (debug)
+# 4) ROUTES BASIC / DEBUG
 # ============================================================
 
 @app.get("/")
@@ -235,10 +215,7 @@ def root():
 
 @app.get("/debug/env")
 def debug_env():
-    """
-    Vérifie si les variables importantes existent dans Railway.
-    (True/False seulement)
-    """
+    """Vérifie si les variables sont présentes."""
     return {
         "VERIFY_TOKEN": bool(os.getenv("VERIFY_TOKEN")),
         "PAGE_ACCESS_TOKEN": bool(os.getenv("PAGE_ACCESS_TOKEN")),
@@ -249,13 +226,13 @@ def debug_env():
 
 @app.get("/debug/supabase")
 def debug_supabase():
-    """Teste un select simple sur la table shops."""
-    res = supabase.table("shops").select("id, name").limit(1).execute()
+    """Teste Supabase avec un select simple."""
+    res = supabase.table("shops").select("id,name").limit(1).execute()
     return {"ok": True, "data": res.data}
 
 
 # ============================================================
-# 5) WEBHOOK META (GET) -> Vérification
+# 5) WEBHOOK META VERIFY (GET)
 # ============================================================
 
 @app.get("/webhooks/meta")
@@ -264,35 +241,31 @@ def webhook_verify(
     hub_verify_token: str | None = Query(default=None, alias="hub.verify_token"),
     hub_challenge: str | None = Query(default=None, alias="hub.challenge"),
 ):
-    """
-    Meta appelle ce endpoint pour vérifier ton webhook.
-    Tu dois renvoyer hub.challenge si le token est bon.
-    """
-    print("VERIFY GET:", hub_mode, hub_verify_token, hub_challenge)
-
     if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
         return PlainTextResponse(hub_challenge or "", status_code=200)
-
     return PlainTextResponse("Forbidden", status_code=403)
 
 
 # ============================================================
-# 6) WEBHOOK META (POST) -> Réception des messages
+# 6) WEBHOOK META RECEIVE (POST)
 # ============================================================
 
 @app.post("/webhooks/meta")
 async def webhook_receive(request: Request):
     """
-    Meta envoie ici les messages Messenger.
-    On doit répondre 200 rapidement.
+    Reçoit les messages Messenger.
+    IMPORTANT: on met try/except pour éviter "silence" en cas d’erreur DB.
     """
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception as e:
+        print("[ERROR] invalid json:", repr(e))
+        return {"ok": True}
 
     entries = payload.get("entry") or []
     for entry in entries:
         page_id = entry.get("id")
         shop_id = resolve_shop_id(page_id)
-
         print("PAGE_ID:", page_id, "shop_id:", shop_id)
 
         for event in (entry.get("messaging") or []):
@@ -300,48 +273,63 @@ async def webhook_receive(request: Request):
             if not sender_id:
                 continue
 
-            # On ne traite que les messages texte
             msg = event.get("message") or {}
             text = msg.get("text") or ""
             if not text:
                 continue
 
-            # Si la page n'est pas liée à une boutique
+            print("INCOMING:", {"sender_id": sender_id, "text": text})
+
+            # Si pas de boutique liée
             if not shop_id:
                 send_message(sender_id, "⚠️ Page non reliée à une boutique (channels).")
                 continue
 
-            # 1) Enregistrer le client (même salam)
-            upsert_customer(shop_id, "messenger", sender_id)
+            # Toujours enregistrer le client
+            try:
+                upsert_customer(shop_id, "messenger", sender_id)
+            except Exception as e:
+                print("[CUSTOMER ERROR]", repr(e))
 
-            # 2) Salutation -> réponse directe sans DB produits
+            # Salutation
             if is_greeting(text):
                 send_message(sender_id, greeting_reply())
                 continue
 
-            # 3) Chercher produit dans la boutique
-            product = find_product_by_text(shop_id, text)
+            # Chercher produit
+            product = None
+            try:
+                product = find_product_by_text(shop_id, text)
+            except Exception as e:
+                print("[PRODUCT SEARCH ERROR]", repr(e))
+                send_message(sender_id, "⚠️ Erreur recherche produit. Réessaie.")
+                continue
 
-            # 4) Si le client veut commander mais ne donne aucun produit
+            # Si client veut commander mais pas de produit dans le message
             if not product and wants_to_buy(text):
                 send_message(sender_id, "🛒 D'accord ! Quel produit veux-tu commander ? (ex: airpods)")
                 continue
 
-            # 5) Produit trouvé -> soit info, soit création commande draft
+            # Produit trouvé
             if product:
+                # Si intention achat -> créer commande draft
                 if wants_to_buy(text):
-                    order_id = get_or_create_draft_order(shop_id, sender_id)
-                    send_message(sender_id, f"🧾 Commande créée (brouillon)\nID: {order_id}\n➡️ Quelle quantité ?")
+                    try:
+                        order_id = get_or_create_draft_order(shop_id, sender_id)
+                        send_message(sender_id, f"🧾 Commande créée (brouillon)\nID: {order_id}\n➡️ Quelle quantité ?")
+                    except Exception as e:
+                        print("[ORDER ERROR]", repr(e))
+                        send_message(sender_id, "⚠️ Erreur création commande. Réessaie.")
                     continue
 
-                # Info produit (prix/stock)
+                # Sinon -> info produit
                 name = product["name"]
                 price = product["price"]
                 stock = product["stock"]
                 send_message(sender_id, f"📦 {name}\n💰 Prix: {price} DZD\n✅ Stock: {stock}")
                 continue
 
-            # 6) Sinon -> produit introuvable
+            # Produit introuvable
             send_message(sender_id, "Je n’ai pas trouvé ce produit 😅\nEssaie un nom plus clair.")
 
     return {"ok": True}
