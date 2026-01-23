@@ -132,6 +132,57 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
         "last_seen_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
 
+    def get_or_create_draft_order(shop_id: str, psid: str) -> str:
+    """
+    Retourne l'id d'une commande draft existante,
+    ou en crée une nouvelle si elle n'existe pas.
+    """
+
+    # 1) Chercher une commande draft existante
+    res = (
+        supabase.table("orders")
+        .select("id")
+        .eq("shop_id", shop_id)
+        .eq("platform", "messenger")
+        .eq("customer_psid", psid)
+        .eq("status", "draft")
+        .limit(1)
+        .execute()
+    )
+
+    data = res.data or []
+
+    if data:
+        return data[0]["id"]
+
+    # 2) Sinon, créer une nouvelle commande draft
+    created = (
+        supabase.table("orders")
+        .insert({
+            "shop_id": shop_id,
+            "platform": "messenger",
+            "customer_psid": psid,
+            "status": "draft",
+        })
+        .execute()
+    )
+
+    return created.data[0]["id"]
+    def wants_to_buy(text: str) -> bool:
+    """
+    Retourne True si le message contient une intention d'achat.
+    """
+    t = (text or "").lower()
+
+    buy_words = [
+        "acheter", "achète", "achat",
+        "commande", "commander",
+        "n7ab ncommader", "je veux commander", "n7eb ", "commande"
+        "chri", "nchri", "nchra",
+        "prends", "prendre"
+    ]
+
+    return any(word in t for word in buy_words)
 
 
 # =========================
@@ -215,20 +266,31 @@ async def webhook_receive(request: Request):
 
             # ✅ Toujours enregistrer/mettre à jour le client (même salam)
             upsert_customer(shop_id, "messenger", sender_id)
+
+            # ✅ Salutation
             if is_greeting(text):
                 send_message(sender_id, greeting_reply())
                 continue
 
-
-            # 🔎 Chercher produit
+            # 🔎 Chercher produit (dans la boutique)
             product = find_product_by_text(shop_id, text)
 
             if product:
+                # ✅ Si le client veut acheter/commander → créer (ou récupérer) une commande draft
+                if wants_to_buy(text):
+                    order_id = get_or_create_draft_order(shop_id, sender_id)
+                    send_message(
+                        sender_id,
+                        f"🧾 Commande créée (brouillon)\nID: {order_id}\n➡️ Quelle quantité ?"
+                    )
+                    continue
+
+                # Sinon: info produit
                 name = product["name"]
                 price = product["price"]
                 stock = product["stock"]
                 send_message(sender_id, f"📦 {name}\n💰 Prix: {price} DZD\n✅ Stock: {stock}")
             else:
-                send_message(sender_id, f"✅ shop_id={shop_id}\nTu as dit: {text}")
+                send_message(sender_id, f"Je n’ai pas trouvé ce produit 😅\nEssaie un nom plus clair.")
 
     return {"ok": True}
