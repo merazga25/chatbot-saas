@@ -254,6 +254,7 @@ def create_order_item_and_decrease_stock(shop_id: str, order_id: str, product: d
         )
 
     # Insert snapshot
+    line_total = quantity * price
     supabase.table("order_items").insert({
         "order_id": order_id,
         "product_id": product["id"],
