@@ -260,6 +260,7 @@ def create_order_item_and_decrease_stock(shop_id: str, order_id: str, product: d
         "product_name": name,
         "unit_price": price,
         "quantity": quantity,
+        "line_total": line_total,
     }).execute()
 
     new_stock = stock - quantity
