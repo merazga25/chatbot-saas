@@ -3,3 +3,4 @@ uvicorn[standard]
 python-dotenv
 requests
 supabase
+openai>=1.40.0
