@@ -132,13 +132,7 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
         "last_seen_at": datetime.now(timezone.utc).isoformat(),
     }).execute()
 
-    def get_or_create_draft_order(shop_id: str, psid: str) -> str:
-    """
-    Retourne l'id d'une commande draft existante,
-    ou en crée une nouvelle si elle n'existe pas.
-    """
-
-    # 1) Chercher une commande draft existante
+def get_or_create_draft_order(shop_id: str, psid: str) -> str:
     res = (
         supabase.table("orders")
         .select("id")
@@ -151,11 +145,9 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
     )
 
     data = res.data or []
-
     if data:
         return data[0]["id"]
 
-    # 2) Sinon, créer une nouvelle commande draft
     created = (
         supabase.table("orders")
         .insert({
@@ -168,21 +160,18 @@ def upsert_customer(shop_id: str, platform: str, psid: str) -> None:
     )
 
     return created.data[0]["id"]
-    def wants_to_buy(text: str) -> bool:
-    """
-    Retourne True si le message contient une intention d'achat.
-    """
+def wants_to_buy(text: str) -> bool:
     t = (text or "").lower()
-
     buy_words = [
         "acheter", "achète", "achat",
         "commande", "commander",
-        "n7ab ncommader", "je veux commander", "n7eb ", "commande",
+        "n7ab", "nheb", "n7eb",
         "chri", "nchri", "nchra",
-        "prends", "prendre"
+        "prends", "prendre",
+        "je veux"
     ]
-
     return any(word in t for word in buy_words)
+
 
 
 # =========================
