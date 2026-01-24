@@ -18,11 +18,6 @@ app = FastAPI()
 
 VERIFY_TOKEN = os.getenv(VERIFY_TOKEN, mon_token_secret_123)
 DEFAULT_PAGE_TOKEN = os.getenv(PAGE_ACCESS_TOKEN)
-
-
-oai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-
-
 SUPABASE_URL = os.getenv(SUPABASE_URL)
 SUPABASE_KEY = os.getenv(SUPABASE_SERVICE_ROLE_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
