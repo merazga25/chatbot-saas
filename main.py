@@ -3,12 +3,9 @@
 # ============================================================
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import PlainTextResponse
-import os, requests, json, re
+import os, requests, re
 from datetime import datetime, timezone
 from supabase import create_client
-
-# OpenAI (optionnel)
-from openai import OpenAI
 
 # ============================================================
 # APP
@@ -24,12 +21,8 @@ DEFAULT_PAGE_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
 # Supabase client (évite crash si env manquants)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
-oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ============================================================
 # UTILS
@@ -61,15 +54,15 @@ def norm(t: str) -> str:
 
 def is_greeting(t):
     t = norm(t)
-    return t in ["salam", "slm", "bonjour", "salut", "cc", "saha", "hey", "hi"]
+    return t in ["salam", "slm", "bonjour", "salut", "cc", "saha", "hey", "hi", "السلام", "مرحبا"]
 
 def is_yes(t):
     t = norm(t)
-    return t in ["oui", "yes", "yeah", "y", "ok", "d'accord", "dak", "wah", "ايه", "نعم"]
+    return t in ["oui", "yes", "yeah", "y", "ok", "d'accord", "dak", "wah", "ايه", "نعم", "oui.", "ok.", "yes."]
 
 def is_no(t):
     t = norm(t)
-    return t in ["non", "no", "nn", "la", "machi", "لا", "nop"]
+    return t in ["non", "no", "nn", "la", "machi", "لا", "nop", "non.", "no."]
 
 def is_cancel(t):
     t = norm(t)
@@ -86,6 +79,22 @@ def parse_quantity(t):
         return q if q > 0 else None
     except:
         return None
+
+def looks_like_price_question(t: str) -> bool:
+    t = norm(t)
+    keys = [
+        "prix", "price", "combien", "c combien", "c'est combien", "cest combien",
+        "بشحال", "شحال", "السعر", "ثمن", "قداش"
+    ]
+    return any(k in t for k in keys)
+
+def looks_like_order_intent(t: str) -> bool:
+    t = norm(t)
+    keys = [
+        "nheb", "n7ab", "je veux", "jveux", "j'aimerais", "commande", "commander",
+        "acheter", "خذ", "خليلي", "بغيت", "نحب", "حاب", "عطيني"
+    ]
+    return any(k in t for k in keys)
 
 # ============================================================
 # DB HELPERS
@@ -137,7 +146,10 @@ def get_products(shop_id):
     return res.data or []
 
 def find_product(shop_id, text):
-    # matching simple par keywords
+    """
+    Matching simple par keywords.
+    keywords = ["airpods","pods","apple airpods"] etc.
+    """
     text_l = (text or "").lower()
     for p in get_products(shop_id):
         kws = p.get("keywords") or []
@@ -238,54 +250,6 @@ def cancel_order(order_id):
     return "✅ Commande annulée."
 
 # ============================================================
-# OPENAI (INTENT EXTRACTOR)
-# ============================================================
-LLM_PROMPT = """
-Tu es un extracteur d'intention pour un chatbot e-commerce en Algérie (Darija/Français/Arabe).
-Répond UNIQUEMENT en JSON valide.
-
-Format:
-{
- "intent": "greeting|ask_price|place_order|unknown",
- "product": null,
- "quantity": null
-}
-
-Règles:
-- "place_order" si le client veut acheter/commander ("nheb", "je veux", "commande", "خليلي", "بغيت"...)
-- "ask_price" si il demande le prix ("prix", "combien", "بشحال")
-- product: renvoie le nom du produit si واضح, sinon null
-- quantity: renvoie un entier si واضح, sinon null
-"""
-
-def llm_classify(text):
-    if not oai:
-        return {"intent": "unknown", "product": None, "quantity": None}
-
-    try:
-        # Si ton SDK/model supporte response_format json_object, c’est le meilleur.
-        r = oai.chat.completions.create(
-            model=OPENAI_MODEL,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": LLM_PROMPT},
-                {"role": "user", "content": text},
-            ]
-        )
-        obj = json.loads(r.choices[0].message.content)
-        # normalisation minimal
-        if "intent" not in obj:
-            obj["intent"] = "unknown"
-        obj.setdefault("product", None)
-        obj.setdefault("quantity", None)
-        return obj
-    except Exception as e:
-        # fallback ultra-safe
-        print("[LLM ERROR]", repr(e))
-        return {"intent": "unknown", "product": None, "quantity": None}
-
-# ============================================================
 # WEBHOOK VERIFY
 # ============================================================
 @app.get("/webhooks/meta")
@@ -331,9 +295,8 @@ async def receive(request: Request):
             else:
                 text = (e.get("message") or {}).get("text") or ""
 
-            text = text.strip()
+            text = (text or "").strip()
             if not text:
-                # pas de texte (image, audio, sticker...)
                 send_message(sender, "📩 ابعثلي اسم المنتج بالكتابة من فضلك 😊", token)
                 continue
 
@@ -392,16 +355,26 @@ async def receive(request: Request):
                 continue
 
             # =========================
-            # LLM: intent
+            # PRODUCT detection
             # =========================
-            intent = llm_classify(text)
+            product = find_product(channel["shop_id"], text)
 
-            # Place order
-            if intent.get("intent") == "place_order":
-                # Essayez produit depuis intent.product sinon text
-                product = find_product(channel["shop_id"], intent.get("product") or text)
+            # =========================
+            # PRICE question
+            # =========================
+            if looks_like_price_question(text):
                 if not product:
-                    send_message(sender, "❓ أي منتج تقصد؟ (قول الاسم واضح)", token)
+                    send_message(sender, "❓ أي منتج تقصد باش نعطيك السعر؟ (مثال: airpods)", token)
+                else:
+                    send_message(sender, f"💰 {product['name']} = {product['price']} DZD", token)
+                continue
+
+            # =========================
+            # ORDER intent
+            # =========================
+            if looks_like_order_intent(text):
+                if not product:
+                    send_message(sender, "❓ أي منتج تقصد؟ قول الاسم واضح (مثال: airpods)", token)
                     continue
 
                 order_id = create_order(channel["shop_id"], channel["id"], sender)
@@ -411,31 +384,32 @@ async def receive(request: Request):
 
                 set_order_status(order_id, "awaiting_quantity", {"pending_product_id": product["id"]})
 
-                # si quantity déjà détectée par LLM, on peut sauter السؤال
-                qty = intent.get("quantity")
-                if isinstance(qty, int) and qty > 0:
+                # si le client a écrit quantité dans نفس الرسالة
+                qty = parse_quantity(text)
+                if qty:
                     ok, msg = add_item_no_stock_update(order_id, product, qty)
                     send_message(sender, msg, token)
                     if ok:
                         set_order_status(order_id, "awaiting_confirmation")
                 else:
                     send_message(sender, f"🛒 {product['name']} — Quelle quantité ?", token)
-
                 continue
 
-            # Ask price (optionnel: réponse بسيطة)
-            if intent.get("intent") == "ask_price":
-                product = find_product(channel["shop_id"], intent.get("product") or text)
-                if not product:
-                    send_message(sender, "❓ أي منتج تقصد باش نعطيك السعر؟", token)
-                else:
-                    send_message(sender, f"💰 {product['name']} = {product['price']} DZD", token)
+            # =========================
+            # If product mentioned بدون نية واضحة: نعطي خيارات
+            # =========================
+            if product:
+                send_message(
+                    sender,
+                    f"✅ فهمت {product['name']}\nتحب السعر ولا تحب تطلب؟\n- قول: prix {product['name']}\n- أو: nheb {product['name']}",
+                    token
+                )
                 continue
 
             # =========================
             # FALLBACK
             # =========================
-            send_message(sender, "❓ لم أفهم، قول اسم المنتج (مثال: airpods)", token)
+            send_message(sender, "❓ لم أفهم، قول اسم المنتج (مثال: airpods) أو اسأل على السعر (بشحال؟)", token)
 
     return {"ok": True}
 
@@ -445,7 +419,3 @@ async def receive(request: Request):
 @app.get("/")
 def root():
     return {"ok": True}
-
-@app.get("/debug/llm")
-def debug_llm(q: str = "nheb 2 airpods"):
-    return llm_classify(q)
