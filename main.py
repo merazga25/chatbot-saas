@@ -4,7 +4,6 @@ import os
 import requests
 import re
 import json
-from openai import OpenAI
 from datetime import datetime, timezone
 from supabase import create_client
 
@@ -19,8 +18,7 @@ app = FastAPI()
 
 VERIFY_TOKEN = os.getenv(VERIFY_TOKEN, mon_token_secret_123)
 DEFAULT_PAGE_TOKEN = os.getenv(PAGE_ACCESS_TOKEN)
-OPENAI_API_KEY = os.getenv(OPENAI_API_KEY)
-OPENAI_MODEL = os.getenv(OPENAI_MODEL, gpt-4o-mini)
+
 
 oai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
